@@ -56,8 +56,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 10s
-      timeout: 10s
-      retries: 20
+      timeout: 5s
+      retries: 24
+      start_period: 60s
     networks:
       - app-network
 
@@ -74,50 +75,56 @@ services:
     networks:
       - app-network
 
-  config-server:
+  config-service:
     build:
-      context: ./config-server
+      context: ./config-service
     ports:
       - "8888:8888"
     volumes:
-        
         - type: bind
           source: C:\tmp\configs
           target: /configs
           read_only: true
     environment:
       - SPRING_PROFILES_ACTIVE=native
-      - SPRING_CLOUD_CONFIG_SERVER_NATIVE_SEARCHLOCATIONS=file:///configs/
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://host.docker.internal:8761/eureka/
+      - SPRING_CLOUD_CONFIG_SERVICE_NATIVE_SEARCHLOCATIONS=file:///configs/
+      - EUREKA_INSTANCE_HOSTNAME=host.docker.internal
+      - EUREKA_INSTANCE_APPNAME=CONFIG-SERVICE
+      - EUREKA_INSTANCE_STATUSPAGEURLPATH=/actuator/info
+      - EUREKA_INSTANCE_HEALTHCHECKURLPATH=/actuator/health
     depends_on:
-      db:
-        condition: service_healthy
-      kafka:
+      discovery-service:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8888/actuator/health" ]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     networks:
       - app-network
 
   discovery-service:
     build:
       context: ./discovery-service
-    hostname: discovery-service
+    hostname: localhost
     ports:
       - "8761:8761"
     environment:
-      - EUREKA_INSTANCE_HOSTNAME=discovery-service
-      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      - EUREKA_INSTANCE_HOSTNAME=localhost
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://host.docker.internal:8761/eureka/
+      - EUREKA_CLIENT_register-with-eureka=false
+      - EUREKA_CLIENT_fetch-registry= false
     depends_on:
-      config-server:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8761/actuator/health" ]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 18
+      start_period: 30s
     networks:
       - app-network
 
@@ -127,19 +134,20 @@ services:
     ports:
       - "8085:8085"
     environment:
-      - SPRING_CONFIG_IMPORT=configserver:http://config-server:8888
-      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
-      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
-      - EUREKA_INSTANCE_HOSTNAME=api-gateway
+      - SPRING_CONFIG_IMPORT=configserver:http://host.docker.internal:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://host.docker.internal:8761/eureka/
+      - EUREKA_INSTANCE_HOSTNAME=host.docker.internal
+      - EUREKA_INSTANCE_STATUSPAGEURLPATH=/actuator/info
+      - EUREKA_INSTANCE_HEALTHCHECKURLPATH=/actuator/health
     networks:
       - app-network
     depends_on:
-      config-server:
+      user-service:
         condition: service_healthy
-      discovery-service:
+      notification-service:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8085/actuator/gateway/routes"]
+      test: ["CMD", "curl", "-f", "http://localhost:8085/actuator/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -152,31 +160,28 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
-      - SPRING_PROFILES_ACTIVE=default
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://host.docker.internal:8888
       - SPRING_DATASOURCE_URL=jdbc:postgresql://db:5432/user-db
       - SPRING_DATASOURCE_USERNAME=postgres
       - SPRING_DATASOURCE_PASSWORD=postgres
       - SPRING_JPA_HIBERNATE_DDL_AUTO=update
       - SPRING_JPA_SHOW_SQL=true
-      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
-      - EUREKA_INSTANCE_HOSTNAME=user-service
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://host.docker.internal:8761/eureka/
+      - EUREKA_INSTANCE_HOSTNAME=host.docker.internal
+      - EUREKA_INSTANCE_STATUSPAGEURLPATH=/actuator/info
+      - EUREKA_INSTANCE_HEALTHCHECKURLPATH=/actuator/health
     networks:
       - app-network
     depends_on:
       db:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
-      config-server:
-        condition: service_healthy
-      discovery-service:
+      config-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
-      interval: 30s
-      timeout: 15s
-      retries: 5
+      interval: 15s
+      timeout: 10s
+      retries: 12
       start_period: 60s
 
   notification-service:
@@ -186,22 +191,23 @@ services:
     ports:
       - "8083:8083"
     environment:
-        - SPRING_KAFKA_CONSUMER_GROUP_ID=notification-group
-        - SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET=earliest
-        - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-        - SPRING_KAFKA_CONSUMER_KEY_DESERIALIZER=org.apache.kafka.common.serialization.StringDeserializer
-        - SPRING_KAFKA_CONSUMER_VALUE_DESERIALIZER=org.springframework.kafka.support.serializer.JsonDeserializer
-        - SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_TRUSTED_PACKAGES=*
-        - SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_VALUE_DEFAULT_TYPE=com.example.common.event.UserEvent
-        - SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_USE_TYPE_HEADERS=false
-        - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
-        - EUREKA_INSTANCE_HOSTNAME=notification-service
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://host.docker.internal:8888
+      - SPRING_KAFKA_CONSUMER_GROUP_ID=notification-group
+      - SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET=earliest
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_KAFKA_CONSUMER_KEY_DESERIALIZER=org.apache.kafka.common.serialization.StringDeserializer
+      - SPRING_KAFKA_CONSUMER_VALUE_DESERIALIZER=org.springframework.kafka.support.serializer.JsonDeserializer
+      - SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_TRUSTED_PACKAGES=*
+      - SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_VALUE_DEFAULT_TYPE=com.example.common.event.UserEvent
+      - SPRING_KAFKA_CONSUMER_PROPERTIES_SPRING_JSON_USE_TYPE_HEADERS=false
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://host.docker.internal:8761/eureka/
+      - EUREKA_INSTANCE_HOSTNAME=host.docker.internal
+      - EUREKA_INSTANCE_STATUSPAGEURLPATH=/actuator/info
+      - EUREKA_INSTANCE_HEALTHCHECKURLPATH=/actuator/health
     networks:
       - app-network
     depends_on:
-      config-server:
-        condition: service_healthy
-      discovery-service:
+      config-service:
         condition: service_healthy
       kafka:
         condition: service_healthy
@@ -209,10 +215,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
-      interval: 30s
-      timeout: 15s
-      retries: 5
-      start_period: 90s
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
 
 volumes:
   zookeeper-data:
